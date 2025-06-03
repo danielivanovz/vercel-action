@@ -137,13 +137,28 @@ runs:
         echo "project_type=$project_type" >> $GITHUB_OUTPUT
         echo "🔍 Detected project type: $project_type"
 
+    - name: Setup pnpm
+      if: inputs.PACKAGE_MANAGER == 'pnpm'
+      uses: pnpm/action-setup@v2
+      with:
+        version: latest
+
+    - name: Setup bun
+      if: inputs.PACKAGE_MANAGER == 'bun'
+      uses: oven-sh/setup-bun@v1
+      with:
+        bun-version: latest
+
     - name: Setup Node.js
       if: steps.detect-project.outputs.project_type != 'go' && steps.detect-project.outputs.project_type != 'python'
       uses: actions/setup-node@v4
       with:
         node-version: ${{ inputs.NODE_VERSION }}
         cache: ${{ inputs.PACKAGE_MANAGER != 'bun' && inputs.PACKAGE_MANAGER || '' }}
-        cache-dependency-path: ${{ inputs.WORKING_DIRECTORY }}/package-lock.json
+        cache-dependency-path: |
+          ${{ inputs.WORKING_DIRECTORY }}/package-lock.json
+          ${{ inputs.WORKING_DIRECTORY }}/pnpm-lock.yaml
+          ${{ inputs.WORKING_DIRECTORY }}/yarn.lock
 
     - name: Setup Python
       if: steps.detect-project.outputs.project_type == 'python'
@@ -160,18 +175,6 @@ runs:
         go-version: ${{ inputs.GO_VERSION }}
         cache: true
         cache-dependency-path: ${{ inputs.WORKING_DIRECTORY }}/go.mod
-
-    - name: Setup pnpm
-      if: inputs.PACKAGE_MANAGER == 'pnpm'
-      uses: pnpm/action-setup@v2
-      with:
-        version: latest
-
-    - name: Setup bun
-      if: inputs.PACKAGE_MANAGER == 'bun'
-      uses: oven-sh/setup-bun@v1
-      with:
-        bun-version: latest
 
     - name: Configure npm authentication
       if: steps.detect-project.outputs.project_type != 'go' && steps.detect-project.outputs.project_type != 'python'
