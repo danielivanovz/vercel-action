@@ -155,10 +155,6 @@ runs:
       with:
         node-version: ${{ inputs.NODE_VERSION }}
         cache: ${{ inputs.PACKAGE_MANAGER != 'bun' && inputs.PACKAGE_MANAGER || '' }}
-        cache-dependency-path: |
-          ${{ inputs.WORKING_DIRECTORY }}/package-lock.json
-          ${{ inputs.WORKING_DIRECTORY }}/pnpm-lock.yaml
-          ${{ inputs.WORKING_DIRECTORY }}/yarn.lock
 
     - name: Setup Python
       if: steps.detect-project.outputs.project_type == 'python'
@@ -339,7 +335,7 @@ runs:
           const workingDir = '${{ inputs.WORKING_DIRECTORY }}' !== '.' ?
             '\n**Directory:** `${{ inputs.WORKING_DIRECTORY }}`' : '';
 
-          const body = `### 🚀 Vercel Deployment
+          const body = `## 🚀 Vercel Deployment
 
           **Project:** ${{ steps.detect-project.outputs.project_type }}
           **Environment:** ${{ steps.env-detection.outputs.environment }}
