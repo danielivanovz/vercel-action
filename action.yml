@@ -68,6 +68,9 @@ outputs:
   project_type:
     description: "Detected project type"
     value: ${{ steps.detect-project.outputs.project_type }}
+  cache_hit:
+    description: "Whether dependencies were restored from cache"
+    value: ${{ steps.cache-deps.outputs.cache-hit }}
 
 runs:
   using: "composite"
@@ -186,6 +189,46 @@ runs:
         cache: true
         cache-dependency-path: ${{ inputs.WORKING_DIRECTORY }}/go.mod
 
+    - name: Get package manager cache directory
+      if: steps.detect-project.outputs.project_type != 'go' && steps.detect-project.outputs.project_type != 'python'
+      id: cache-dir
+      shell: bash
+      working-directory: ${{ inputs.WORKING_DIRECTORY }}
+      run: |
+        package_mgr="${{ steps.package-manager.outputs.manager }}"
+        case "$package_mgr" in
+          "pnpm")
+            echo "path=$(pnpm store path --silent)" >> $GITHUB_OUTPUT
+            echo "key=pnpm-store" >> $GITHUB_OUTPUT
+            ;;
+          "yarn")
+            echo "path=$(yarn cache dir)" >> $GITHUB_OUTPUT
+            echo "key=yarn-cache" >> $GITHUB_OUTPUT
+            ;;
+          "bun")
+            echo "path=~/.bun/install/cache" >> $GITHUB_OUTPUT
+            echo "key=bun-cache" >> $GITHUB_OUTPUT
+            ;;
+          *)
+            echo "path=~/.npm" >> $GITHUB_OUTPUT
+            echo "key=npm-cache" >> $GITHUB_OUTPUT
+            ;;
+        esac
+
+    - name: Cache dependencies
+      if: steps.detect-project.outputs.project_type != 'go' && steps.detect-project.outputs.project_type != 'python'
+      id: cache-deps
+      uses: actions/cache@v4
+      with:
+        path: |
+          ${{ steps.cache-dir.outputs.path }}
+          ${{ inputs.WORKING_DIRECTORY }}/node_modules
+        key: ${{ runner.os }}-${{ steps.cache-dir.outputs.key }}-${{ inputs.NODE_VERSION }}-${{ steps.package-manager.outputs.manager }}-${{ hashFiles(format('{0}/**/package-lock.json', inputs.WORKING_DIRECTORY), format('{0}/**/pnpm-lock.yaml', inputs.WORKING_DIRECTORY), format('{0}/**/yarn.lock', inputs.WORKING_DIRECTORY), format('{0}/**/bun.lockb', inputs.WORKING_DIRECTORY)) }}
+        restore-keys: |
+          ${{ runner.os }}-${{ steps.cache-dir.outputs.key }}-${{ inputs.NODE_VERSION }}-${{ steps.package-manager.outputs.manager }}-
+          ${{ runner.os }}-${{ steps.cache-dir.outputs.key }}-${{ inputs.NODE_VERSION }}-
+          ${{ runner.os }}-${{ steps.cache-dir.outputs.key }}-
+
     - name: Configure npm authentication
       if: steps.detect-project.outputs.project_type != 'go' && steps.detect-project.outputs.project_type != 'python'
       shell: bash
@@ -205,6 +248,13 @@ runs:
       run: |
         project_type="${{ steps.detect-project.outputs.project_type }}"
         package_mgr="${{ steps.package-manager.outputs.manager }}"
+        cache_hit="${{ steps.cache-deps.outputs.cache-hit }}"
+
+        if [[ "$cache_hit" == "true" ]]; then
+          echo "✅ Dependencies restored from cache"
+        else
+          echo "📦 Installing dependencies (cache miss)"
+        fi
 
         if [[ -n "${{ inputs.INSTALL_COMMAND }}" ]]; then
           echo "🔧 Running custom install command: ${{ inputs.INSTALL_COMMAND }}"
@@ -214,10 +264,54 @@ runs:
             "turbo"|"nx")
               echo "🏗️ Installing dependencies for $project_type monorepo with $package_mgr"
               case "$package_mgr" in
-                "pnpm") pnpm install --frozen-lockfile ;;
-                "yarn") yarn install --immutable ;;
-                "bun") bun install --frozen-lockfile ;;
-                *) npm ci ;;
+                "pnpm")
+                  if [[ -f "pnpm-lock.yaml" ]]; then
+                    if [[ "$cache_hit" != "true" ]]; then
+                      pnpm install --frozen-lockfile
+                    else
+                      echo "⚡ Skipping pnpm install (dependencies cached)"
+                    fi
+                  else
+                    echo "⚠️ No pnpm-lock.yaml found, running regular install"
+                    pnpm install
+                  fi
+                  ;;
+                "yarn")
+                  if [[ -f "yarn.lock" ]]; then
+                    if [[ "$cache_hit" != "true" ]]; then
+                      yarn install --immutable
+                    else
+                      echo "⚡ Skipping yarn install (dependencies cached)"
+                    fi
+                  else
+                    echo "⚠️ No yarn.lock found, running regular install"
+                    yarn install
+                  fi
+                  ;;
+                "bun")
+                  if [[ -f "bun.lockb" ]]; then
+                    if [[ "$cache_hit" != "true" ]]; then
+                      bun install --frozen-lockfile
+                    else
+                      echo "⚡ Skipping bun install (dependencies cached)"
+                    fi
+                  else
+                    echo "⚠️ No bun.lockb found, running regular install"
+                    bun install
+                  fi
+                  ;;
+                *)
+                  if [[ -f "package-lock.json" ]]; then
+                    if [[ "$cache_hit" != "true" ]]; then
+                      npm ci
+                    else
+                      echo "⚡ Skipping npm ci (dependencies cached)"
+                    fi
+                  else
+                    echo "⚠️ No package-lock.json found, running npm install"
+                    npm install
+                  fi
+                  ;;
               esac
               ;;
             "python")
@@ -236,10 +330,54 @@ runs:
             *)
               echo "📦 Installing Node.js dependencies with $package_mgr"
               case "$package_mgr" in
-                "pnpm") pnpm install --frozen-lockfile ;;
-                "yarn") yarn install --immutable ;;
-                "bun") bun install --frozen-lockfile ;;
-                *) npm ci ;;
+                "pnpm")
+                  if [[ -f "pnpm-lock.yaml" ]]; then
+                    if [[ "$cache_hit" != "true" ]]; then
+                      pnpm install --frozen-lockfile
+                    else
+                      echo "⚡ Skipping pnpm install (dependencies cached)"
+                    fi
+                  else
+                    echo "⚠️ No pnpm-lock.yaml found, running regular install"
+                    pnpm install
+                  fi
+                  ;;
+                "yarn")
+                  if [[ -f "yarn.lock" ]]; then
+                    if [[ "$cache_hit" != "true" ]]; then
+                      yarn install --immutable
+                    else
+                      echo "⚡ Skipping yarn install (dependencies cached)"
+                    fi
+                  else
+                    echo "⚠️ No yarn.lock found, running regular install"
+                    yarn install
+                  fi
+                  ;;
+                "bun")
+                  if [[ -f "bun.lockb" ]]; then
+                    if [[ "$cache_hit" != "true" ]]; then
+                      bun install --frozen-lockfile
+                    else
+                      echo "⚡ Skipping bun install (dependencies cached)"
+                    fi
+                  else
+                    echo "⚠️ No bun.lockb found, running regular install"
+                    bun install
+                  fi
+                  ;;
+                *)
+                  if [[ -f "package-lock.json" ]]; then
+                    if [[ "$cache_hit" != "true" ]]; then
+                      npm ci
+                    else
+                      echo "⚡ Skipping npm ci (dependencies cached)"
+                    fi
+                  else
+                    echo "⚠️ No package-lock.json found, running npm install"
+                    npm install
+                  fi
+                  ;;
               esac
               ;;
           esac
@@ -314,6 +452,8 @@ runs:
         echo "**Environment:** ${{ steps.env-detection.outputs.environment }}" >> $GITHUB_STEP_SUMMARY
         echo "**URL:** $url" >> $GITHUB_STEP_SUMMARY
         echo "**Working Directory:** ${{ inputs.WORKING_DIRECTORY }}" >> $GITHUB_STEP_SUMMARY
+        echo "**Package Manager:** ${{ steps.package-manager.outputs.manager }}" >> $GITHUB_STEP_SUMMARY
+        echo "**Dependencies Cached:** ${{ steps.cache-deps.outputs.cache-hit == 'true' && '✅ Yes' || '❌ No' }}" >> $GITHUB_STEP_SUMMARY
 
     - name: Comment on PR
       if: github.event_name == 'pull_request'
