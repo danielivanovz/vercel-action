@@ -1,0 +1,367 @@
+name: "Deploy to Vercel"
+description: "Deploy Next.js, React, Python, and Go applications to Vercel with monorepo and workspace support"
+author: "Daniel Ivanov"
+
+inputs:
+  VERCEL_TOKEN:
+    description: "Vercel deployment token"
+    required: true
+  VERCEL_ORG_ID:
+    description: "Vercel organization ID"
+    required: true
+  VERCEL_PROJECT_ID:
+    description: "Vercel project ID"
+    required: true
+  GITHUB_TOKEN:
+    description: "GitHub token for PR comments and private npm packages"
+    required: true
+  ENVIRONMENT:
+    description: "Deployment environment (production, development, preview)"
+    required: false
+  NODE_VERSION:
+    description: "Node.js version to use"
+    required: false
+    default: "18"
+  PYTHON_VERSION:
+    description: "Python version to use (for Python projects)"
+    required: false
+    default: "3.11"
+  GO_VERSION:
+    description: "Go version to use (for Go projects)"
+    required: false
+    default: "1.21"
+  PACKAGE_MANAGER:
+    description: "Package manager (npm, pnpm, yarn, bun)"
+    required: false
+    default: "npm"
+  WORKING_DIRECTORY:
+    description: "Working directory for deployment (useful for monorepos)"
+    required: false
+    default: "."
+  BUILD_COMMAND:
+    description: "Custom build command (overrides auto-detection)"
+    required: false
+  INSTALL_COMMAND:
+    description: "Custom install command (overrides auto-detection)"
+    required: false
+  PROJECT_TYPE:
+    description: "Project type (auto, nextjs, react, python, go, turbo, nx)"
+    required: false
+    default: "auto"
+  TURBO_TEAM:
+    description: "Turbo team for remote caching"
+    required: false
+  TURBO_TOKEN:
+    description: "Turbo token for remote caching"
+    required: false
+  NPM_SCOPE:
+    description: "NPM scope for private packages (e.g., @your-org)"
+    required: false
+
+outputs:
+  url:
+    description: "The deployment URL"
+    value: ${{ steps.deploy.outputs.url }}
+  environment:
+    description: "The deployment environment"
+    value: ${{ steps.env-detection.outputs.environment }}
+  project_type:
+    description: "Detected project type"
+    value: ${{ steps.detect-project.outputs.project_type }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Detect environment
+      id: env-detection
+      shell: bash
+      run: |
+        if [[ -n "${{ inputs.ENVIRONMENT }}" ]]; then
+          echo "environment=${{ inputs.ENVIRONMENT }}" >> $GITHUB_OUTPUT
+          if [[ "${{ inputs.ENVIRONMENT }}" == "production" ]]; then
+            echo "vercel_env=production" >> $GITHUB_OUTPUT
+            echo "deploy_flag=--prod" >> $GITHUB_OUTPUT
+          else
+            echo "vercel_env=${{ inputs.ENVIRONMENT }}" >> $GITHUB_OUTPUT
+            echo "deploy_flag=" >> $GITHUB_OUTPUT
+          fi
+        else
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            echo "environment=preview" >> $GITHUB_OUTPUT
+            echo "vercel_env=preview" >> $GITHUB_OUTPUT
+            echo "deploy_flag=" >> $GITHUB_OUTPUT
+          elif [[ "${{ github.ref }}" == "refs/heads/main" ]] || [[ "${{ github.ref }}" == "refs/heads/master" ]]; then
+            echo "environment=production" >> $GITHUB_OUTPUT
+            echo "vercel_env=production" >> $GITHUB_OUTPUT
+            echo "deploy_flag=--prod" >> $GITHUB_OUTPUT
+          elif [[ "${{ github.ref }}" == "refs/heads/develop" ]] || [[ "${{ github.ref }}" == "refs/heads/development" ]]; then
+            echo "environment=development" >> $GITHUB_OUTPUT
+            echo "vercel_env=development" >> $GITHUB_OUTPUT
+            echo "deploy_flag=" >> $GITHUB_OUTPUT
+          else
+            echo "environment=preview" >> $GITHUB_OUTPUT
+            echo "vercel_env=preview" >> $GITHUB_OUTPUT
+            echo "deploy_flag=" >> $GITHUB_OUTPUT
+          fi
+        fi
+
+    - name: Detect project type
+      id: detect-project
+      shell: bash
+      working-directory: ${{ inputs.WORKING_DIRECTORY }}
+      run: |
+        project_type="${{ inputs.PROJECT_TYPE }}"
+
+        if [[ "$project_type" == "auto" ]]; then
+          if [[ -f "turbo.json" ]] || [[ -f "../turbo.json" ]] || [[ -f "../../turbo.json" ]]; then
+            project_type="turbo"
+          elif [[ -f "nx.json" ]] || [[ -f "../nx.json" ]]; then
+            project_type="nx"
+          elif [[ -f "requirements.txt" ]] || [[ -f "pyproject.toml" ]] || [[ -f "poetry.lock" ]]; then
+            project_type="python"
+          elif [[ -f "go.mod" ]]; then
+            project_type="go"
+          elif [[ -f "next.config.js" ]] || [[ -f "next.config.mjs" ]] || [[ -f "next.config.ts" ]]; then
+            project_type="nextjs"
+          elif [[ -f "package.json" ]]; then
+            if grep -q "\"react\"" package.json 2>/dev/null; then
+              project_type="react"
+            else
+              project_type="nextjs"
+            fi
+          else
+            project_type="nextjs"
+          fi
+        fi
+
+        echo "project_type=$project_type" >> $GITHUB_OUTPUT
+        echo "🔍 Detected project type: $project_type"
+
+    - name: Setup Node.js
+      if: steps.detect-project.outputs.project_type != 'go' && steps.detect-project.outputs.project_type != 'python'
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ inputs.NODE_VERSION }}
+        cache: ${{ inputs.PACKAGE_MANAGER != 'bun' && inputs.PACKAGE_MANAGER || '' }}
+        cache-dependency-path: ${{ inputs.WORKING_DIRECTORY }}/package-lock.json
+
+    - name: Setup Python
+      if: steps.detect-project.outputs.project_type == 'python'
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ inputs.PYTHON_VERSION }}
+        cache: "pip"
+        cache-dependency-path: ${{ inputs.WORKING_DIRECTORY }}/requirements.txt
+
+    - name: Setup Go
+      if: steps.detect-project.outputs.project_type == 'go'
+      uses: actions/setup-go@v4
+      with:
+        go-version: ${{ inputs.GO_VERSION }}
+        cache: true
+        cache-dependency-path: ${{ inputs.WORKING_DIRECTORY }}/go.mod
+
+    - name: Setup pnpm
+      if: inputs.PACKAGE_MANAGER == 'pnpm'
+      uses: pnpm/action-setup@v2
+      with:
+        version: latest
+
+    - name: Setup bun
+      if: inputs.PACKAGE_MANAGER == 'bun'
+      uses: oven-sh/setup-bun@v1
+      with:
+        bun-version: latest
+
+    - name: Configure npm authentication
+      if: steps.detect-project.outputs.project_type != 'go' && steps.detect-project.outputs.project_type != 'python'
+      shell: bash
+      working-directory: ${{ inputs.WORKING_DIRECTORY }}
+      run: |
+        echo "//npm.pkg.github.com/:_authToken=${{ inputs.GITHUB_TOKEN }}" >> ~/.npmrc
+        if [[ -n "${{ inputs.NPM_SCOPE }}" ]]; then
+          echo "${{ inputs.NPM_SCOPE }}:registry=https://npm.pkg.github.com" >> ~/.npmrc
+        else
+          echo "@*:registry=https://npm.pkg.github.com" >> ~/.npmrc
+        fi
+        echo "registry=https://registry.npmjs.org/" >> ~/.npmrc
+
+    - name: Install dependencies
+      shell: bash
+      working-directory: ${{ inputs.WORKING_DIRECTORY }}
+      run: |
+        project_type="${{ steps.detect-project.outputs.project_type }}"
+
+        if [[ -n "${{ inputs.INSTALL_COMMAND }}" ]]; then
+          echo "🔧 Running custom install command: ${{ inputs.INSTALL_COMMAND }}"
+          ${{ inputs.INSTALL_COMMAND }}
+        else
+          case "$project_type" in
+            "turbo")
+              echo "🏗️ Installing dependencies for Turbo monorepo"
+              if [[ "${{ inputs.PACKAGE_MANAGER }}" == "pnpm" ]]; then
+                pnpm install --frozen-lockfile
+              elif [[ "${{ inputs.PACKAGE_MANAGER }}" == "yarn" ]]; then
+                yarn install --immutable
+              elif [[ "${{ inputs.PACKAGE_MANAGER }}" == "bun" ]]; then
+                bun install --frozen-lockfile
+              else
+                npm ci
+              fi
+              ;;
+            "nx")
+              echo "🏗️ Installing dependencies for Nx monorepo"
+              if [[ "${{ inputs.PACKAGE_MANAGER }}" == "pnpm" ]]; then
+                pnpm install --frozen-lockfile
+              elif [[ "${{ inputs.PACKAGE_MANAGER }}" == "yarn" ]]; then
+                yarn install --immutable
+              else
+                npm ci
+              fi
+              ;;
+            "python")
+              echo "🐍 Installing Python dependencies"
+              if [[ -f "requirements.txt" ]]; then
+                pip install -r requirements.txt
+              elif [[ -f "pyproject.toml" ]]; then
+                pip install .
+              fi
+              ;;
+            "go")
+              echo "🐹 Installing Go dependencies"
+              go mod download
+              go mod verify
+              ;;
+            *)
+              echo "📦 Installing Node.js dependencies"
+              if [[ "${{ inputs.PACKAGE_MANAGER }}" == "pnpm" ]]; then
+                pnpm install --frozen-lockfile
+              elif [[ "${{ inputs.PACKAGE_MANAGER }}" == "yarn" ]]; then
+                yarn install --immutable
+              elif [[ "${{ inputs.PACKAGE_MANAGER }}" == "bun" ]]; then
+                bun install --frozen-lockfile
+              else
+                npm ci
+              fi
+              ;;
+          esac
+        fi
+
+    - name: Install Vercel CLI
+      shell: bash
+      run: npm install --global vercel@latest
+
+    - name: Setup Turbo remote caching
+      if: steps.detect-project.outputs.project_type == 'turbo' && inputs.TURBO_TOKEN != ''
+      shell: bash
+      working-directory: ${{ inputs.WORKING_DIRECTORY }}
+      run: |
+        if [[ -n "${{ inputs.TURBO_TEAM }}" ]]; then
+          npx turbo login --token=${{ inputs.TURBO_TOKEN }}
+          npx turbo link --team=${{ inputs.TURBO_TEAM }}
+        fi
+
+    - name: Pull Vercel Environment Information
+      shell: bash
+      working-directory: ${{ inputs.WORKING_DIRECTORY }}
+      env:
+        VERCEL_ORG_ID: ${{ inputs.VERCEL_ORG_ID }}
+        VERCEL_PROJECT_ID: ${{ inputs.VERCEL_PROJECT_ID }}
+      run: |
+        vercel pull --yes --environment=${{ steps.env-detection.outputs.vercel_env }} --token=${{ inputs.VERCEL_TOKEN }}
+
+    - name: Build Project
+      shell: bash
+      working-directory: ${{ inputs.WORKING_DIRECTORY }}
+      env:
+        VERCEL_ORG_ID: ${{ inputs.VERCEL_ORG_ID }}
+        VERCEL_PROJECT_ID: ${{ inputs.VERCEL_PROJECT_ID }}
+        TURBO_TOKEN: ${{ inputs.TURBO_TOKEN }}
+        TURBO_TEAM: ${{ inputs.TURBO_TEAM }}
+      run: |
+        if [[ -n "${{ inputs.BUILD_COMMAND }}" ]]; then
+          echo "🔧 Running custom build command: ${{ inputs.BUILD_COMMAND }}"
+          ${{ inputs.BUILD_COMMAND }}
+        else
+          echo "🏗️ Running Vercel build"
+          vercel build ${{ steps.env-detection.outputs.deploy_flag }} --token=${{ inputs.VERCEL_TOKEN }}
+        fi
+
+    - name: Deploy to Vercel
+      id: deploy
+      shell: bash
+      working-directory: ${{ inputs.WORKING_DIRECTORY }}
+      env:
+        VERCEL_ORG_ID: ${{ inputs.VERCEL_ORG_ID }}
+        VERCEL_PROJECT_ID: ${{ inputs.VERCEL_PROJECT_ID }}
+      run: |
+        set -e
+
+        if [[ -n "${{ inputs.BUILD_COMMAND }}" ]]; then
+          echo "🚀 Deploying with custom build"
+          url=$(vercel deploy ${{ steps.env-detection.outputs.deploy_flag }} --token=${{ inputs.VERCEL_TOKEN }})
+        else
+          echo "🚀 Deploying prebuilt artifacts"
+          url=$(vercel deploy --prebuilt ${{ steps.env-detection.outputs.deploy_flag }} --token=${{ inputs.VERCEL_TOKEN }})
+        fi
+
+        if [[ -z "$url" ]]; then
+          echo "❌ Deployment failed - no URL returned"
+          exit 1
+        fi
+
+        echo "url=$url" >> $GITHUB_OUTPUT
+        echo "### 🚀 Vercel Deployment Successful!" >> $GITHUB_STEP_SUMMARY
+        echo "**Project Type:** ${{ steps.detect-project.outputs.project_type }}" >> $GITHUB_STEP_SUMMARY
+        echo "**Environment:** ${{ steps.env-detection.outputs.environment }}" >> $GITHUB_STEP_SUMMARY
+        echo "**URL:** $url" >> $GITHUB_STEP_SUMMARY
+        echo "**Working Directory:** ${{ inputs.WORKING_DIRECTORY }}" >> $GITHUB_STEP_SUMMARY
+
+    - name: Comment on PR
+      if: github.event_name == 'pull_request'
+      uses: actions/github-script@v7
+      with:
+        github-token: ${{ inputs.GITHUB_TOKEN }}
+        script: |
+          const { data: comments } = await github.rest.issues.listComments({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            issue_number: context.issue.number,
+          });
+
+          const botComment = comments.find(comment =>
+            comment.user.type === 'Bot' && comment.body.includes('🚀 Vercel Deployment')
+          );
+
+          const workingDir = '${{ inputs.WORKING_DIRECTORY }}' !== '.' ?
+            '\n**Directory:** `${{ inputs.WORKING_DIRECTORY }}`' : '';
+
+          const body = `### 🚀 Vercel Deployment
+
+          **Project:** ${{ steps.detect-project.outputs.project_type }}
+          **Environment:** ${{ steps.env-detection.outputs.environment }}
+          **Preview URL:** ${{ steps.deploy.outputs.url }}${workingDir}
+          **Commit:** \`${context.sha.substring(0, 7)}\`
+
+          ---
+          *Updated at ${new Date().toISOString()}*`;
+
+          if (botComment) {
+            await github.rest.issues.updateComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: botComment.id,
+              body: body
+            });
+          } else {
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: body
+            });
+          }
+
+branding:
+  icon: "upload-cloud"
+  color: "black"
